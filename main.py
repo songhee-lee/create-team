@@ -14,19 +14,55 @@ st.set_page_config(
     layout="wide"
 )
 
+# secrets에서 기본값 로드 (있으면)
+def load_defaults_from_secrets():
+    """secrets.toml에서 기본값 로드"""
+    defaults = {
+        'names': None,
+        'n_people': 12,
+        'team_size': 3,
+        'distribution_type': '균등'
+    }
+    
+    try:
+        if 'people' in st.secrets and 'names' in st.secrets['people']:
+            defaults['names'] = list(st.secrets['people']['names'])
+            # secrets에 이름이 있으면 이름 개수를 우선순위로 사용
+            defaults['n_people'] = len(defaults['names'])
+        
+        if 'default' in st.secrets:
+            # n_people은 이름이 없을 때만 적용
+            if 'n_people' in st.secrets['default'] and not defaults['names']:
+                defaults['n_people'] = st.secrets['default']['n_people']
+            if 'team_size' in st.secrets['default']:
+                defaults['team_size'] = st.secrets['default']['team_size']
+            if 'distribution_type' in st.secrets['default']:
+                defaults['distribution_type'] = st.secrets['default']['distribution_type']
+    except Exception as e:
+        # secrets 파일이 없거나 오류가 있으면 기본값 사용
+        pass
+    
+    return defaults
+
+# 기본값 로드
+_defaults = load_defaults_from_secrets()
+
 # 세션 상태 초기화
 if 'rounds' not in st.session_state:
     st.session_state.rounds = []
 if 'meeting_count' not in st.session_state:
     st.session_state.meeting_count = defaultdict(int)
 if 'people_names' not in st.session_state:
-    st.session_state.people_names = []
+    if _defaults['names']:
+        st.session_state.people_names = _defaults['names'].copy()
+    else:
+        st.session_state.people_names = []
 if 'n_people' not in st.session_state:
-    st.session_state.n_people = 0
+    st.session_state.n_people = _defaults['n_people']
 if 'team_size' not in st.session_state:
-    st.session_state.team_size = 0
+    st.session_state.team_size = _defaults['team_size']
 if 'distribution_type' not in st.session_state:
-    st.session_state.distribution_type = "균등"
+    st.session_state.distribution_type = _defaults['distribution_type']
 if 'duplicate_people' not in st.session_state:
     st.session_state.duplicate_people = {}
 
@@ -195,14 +231,23 @@ def create_meeting_heatmap(n_people, meeting_count, people_names):
     matrix = np.zeros((n_people, n_people))
     
     for (i, j), count in meeting_count.items():
-        matrix[i][j] = count
-        matrix[j][i] = count
+        if i < n_people and j < n_people:  # 안전장치
+            matrix[i][j] = count
+            matrix[j][i] = count
+    
+    # 이름 리스트 안전하게 생성
+    safe_names = []
+    for i in range(n_people):
+        if i < len(people_names):
+            safe_names.append(people_names[i])
+        else:
+            safe_names.append(f"사람{i+1}")
     
     # Plotly 히트맵 생성
     fig = go.Figure(data=go.Heatmap(
         z=matrix,
-        x=[people_names[i] for i in range(n_people)],
-        y=[people_names[i] for i in range(n_people)],
+        x=safe_names,
+        y=safe_names,
         colorscale='RdYlGn_r',
         text=matrix,
         texttemplate='%{text:.0f}',
@@ -284,11 +329,21 @@ def create_person_meeting_chart(n_people, meeting_count, people_names):
     person_counts = [0] * n_people
     
     for (i, j), count in meeting_count.items():
-        person_counts[i] += count
-        person_counts[j] += count
+        if i < n_people:  # 안전장치
+            person_counts[i] += count
+        if j < n_people:  # 안전장치
+            person_counts[j] += count
+    
+    # 이름 리스트 안전하게 생성
+    safe_names = []
+    for i in range(n_people):
+        if i < len(people_names):
+            safe_names.append(people_names[i])
+        else:
+            safe_names.append(f"사람{i+1}")
     
     df = pd.DataFrame({
-        '이름': [people_names[i] for i in range(n_people)],
+        '이름': safe_names,
         '만남 횟수': person_counts
     })
     
@@ -371,7 +426,7 @@ with st.sidebar:
         "전체 인원 수 (N)", 
         min_value=3, 
         max_value=100, 
-        value=12,
+        value=_defaults['n_people'],
         step=1
     )
     
@@ -379,7 +434,7 @@ with st.sidebar:
         "각 팀 인원 수 (M)", 
         min_value=2, 
         max_value=n_people, 
-        value=3,
+        value=min(_defaults['team_size'], n_people),
         step=1
     )
     
@@ -406,7 +461,7 @@ with st.sidebar:
     distribution_type = st.radio(
         "선택:",
         ["균등", "불균등"],
-        index=0 if st.session_state.distribution_type == "균등" else 1,
+        index=0 if _defaults['distribution_type'] == "균등" else 1,
         help="균등: 남은 인원을 마지막 팀에 추가\n불균등: 남은 인원을 여러 팀에 분산"
     )
     st.session_state.distribution_type = distribution_type
@@ -417,7 +472,20 @@ with st.sidebar:
         st.session_state.team_size = team_size
         # 이름 리스트 초기화
         if len(st.session_state.people_names) != n_people:
-            st.session_state.people_names = [f"사람{i+1}" for i in range(n_people)]
+            # secrets에 이름이 있고 인원수가 맞으면 사용
+            if _defaults['names'] and len(_defaults['names']) == n_people:
+                st.session_state.people_names = _defaults['names'].copy()
+            # secrets 이름이 있지만 인원수가 다르면
+            elif _defaults['names']:
+                # secrets 이름을 최대한 사용하고, 부족하면 "사람X" 추가
+                base_names = _defaults['names'].copy()
+                if len(base_names) > n_people:
+                    st.session_state.people_names = base_names[:n_people]
+                else:
+                    st.session_state.people_names = base_names + [f"사람{i+1}" for i in range(len(base_names), n_people)]
+            # secrets에 이름이 없으면 기본 형식 사용
+            else:
+                st.session_state.people_names = [f"사람{i+1}" for i in range(n_people)]
     
     st.markdown("---")
     
