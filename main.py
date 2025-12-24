@@ -9,7 +9,7 @@ import numpy as np
 
 # 페이지 설정
 st.set_page_config(
-    page_title="팀 생성기",
+    page_title="Joshua Team Generator",
     page_icon="👥",
     layout="wide"
 )
@@ -20,7 +20,7 @@ def load_defaults_from_secrets():
     defaults = {
         'names': None,
         'n_people': 12,
-        'team_size': 3,
+        'num_teams': 4,
         'distribution_type': '균등'
     }
     
@@ -34,10 +34,12 @@ def load_defaults_from_secrets():
             # n_people은 이름이 없을 때만 적용
             if 'n_people' in st.secrets['default'] and not defaults['names']:
                 defaults['n_people'] = st.secrets['default']['n_people']
-            if 'team_size' in st.secrets['default']:
-                defaults['team_size'] = st.secrets['default']['team_size']
-            if 'distribution_type' in st.secrets['default']:
-                defaults['distribution_type'] = st.secrets['default']['distribution_type']
+            if 'num_teams' in st.secrets['default']:
+                defaults['num_teams'] = st.secrets['default']['num_teams']
+            # 하위 호환성을 위해 team_size도 확인
+            elif 'team_size' in st.secrets['default']:
+                # team_size가 있으면 num_teams로 변환 (대략적으로)
+                defaults['num_teams'] = max(1, defaults['n_people'] // st.secrets['default']['team_size'])
     except Exception as e:
         # secrets 파일이 없거나 오류가 있으면 기본값 사용
         pass
@@ -59,10 +61,8 @@ if 'people_names' not in st.session_state:
         st.session_state.people_names = []
 if 'n_people' not in st.session_state:
     st.session_state.n_people = _defaults['n_people']
-if 'team_size' not in st.session_state:
-    st.session_state.team_size = _defaults['team_size']
-if 'distribution_type' not in st.session_state:
-    st.session_state.distribution_type = _defaults['distribution_type']
+if 'num_teams' not in st.session_state:
+    st.session_state.num_teams = _defaults['num_teams']
 if 'duplicate_people' not in st.session_state:
     st.session_state.duplicate_people = {}
 
@@ -163,34 +163,27 @@ def create_round_greedy(n_people, team_size, meeting_count, team_distribution=No
     
     return teams
 
-def calculate_team_distribution(n_people, team_size):
-    """팀 크기 분포 계산
+def calculate_team_distribution(n_people, num_teams):
+    """팀 개수 기준으로 팀 크기 분포 계산
+    
+    Args:
+        n_people: 전체 인원 수
+        num_teams: 팀 개수
     
     Returns:
-        tuple: (균등 분포, 불균등 분포)
-        균등 분포: [M, M, M, ...] - 남는 인원은 마지막 팀에 추가
-        불균등 분포: [M, M, M+1, M+1] - 최대한 고르게 분배
+        list: 각 팀의 인원 수 리스트 (예: [4, 4, 3])
     """
-    num_teams = n_people // team_size
-    remainder = n_people % team_size
+    if num_teams > n_people:
+        num_teams = n_people
     
-    # 균등 분포: 기본 크기 팀들 + 마지막 팀에 남은 인원
-    equal_dist = [team_size] * num_teams
-    if remainder > 0:
-        equal_dist.append(remainder)
+    # 기본 팀 크기와 남은 인원
+    base_size = n_people // num_teams
+    remainder = n_people % num_teams
     
-    # 불균등 분포: 남은 인원을 여러 팀에 분산
-    unequal_dist = []
-    if remainder == 0:
-        unequal_dist = [team_size] * num_teams
-    else:
-        # 큰 팀과 작은 팀 개수 계산
-        num_larger = remainder
-        num_smaller = num_teams - remainder
-        
-        unequal_dist = [team_size] * num_smaller + [team_size + 1] * num_larger
+    # 큰 팀 개수 = remainder, 작은 팀 개수 = num_teams - remainder
+    distribution = [base_size + 1] * remainder + [base_size] * (num_teams - remainder)
     
-    return equal_dist, unequal_dist
+    return distribution
 
 def find_duplicate_pairs(current_round, previous_rounds):
     """현재 라운드에서 이전 라운드와 중복되는 쌍 찾기
@@ -391,16 +384,11 @@ def reset_state():
     st.session_state.rounds = []
     st.session_state.meeting_count = defaultdict(int)
 
-def generate_new_round(n_people, team_size, distribution_type):
+def generate_new_round(n_people, num_teams):
     """새로운 라운드 생성"""
-    equal_dist, unequal_dist = calculate_team_distribution(n_people, team_size)
+    team_dist = calculate_team_distribution(n_people, num_teams)
     
-    if distribution_type == "균등":
-        team_dist = equal_dist
-    else:
-        team_dist = unequal_dist
-    
-    new_teams = create_round_greedy(n_people, team_size, st.session_state.meeting_count, team_dist)
+    new_teams = create_round_greedy(n_people, 0, st.session_state.meeting_count, team_dist)
     st.session_state.rounds.append(new_teams)
     
     # 중복 확인
@@ -415,7 +403,7 @@ def generate_new_round(n_people, team_size, distribution_type):
     return True
 
 # 타이틀
-st.title("👥 팀 생성기")
+st.title("👥 Joshua Team Generator")
 st.markdown("---")
 
 # 사이드바 설정
@@ -430,46 +418,27 @@ with st.sidebar:
         step=1
     )
     
-    team_size = st.number_input(
-        "각 팀 인원 수 (M)", 
-        min_value=2, 
+    num_teams = st.number_input(
+        "팀 개수 (M)", 
+        min_value=1, 
         max_value=n_people, 
-        value=min(_defaults['team_size'], n_people),
-        step=1
+        value=min(_defaults['num_teams'], n_people),
+        step=1,
+        help="전체 인원을 몇 개의 팀으로 나눌지 설정합니다"
     )
     
-    # 팀 분포 타입 선택
+    # 팀 분포 미리보기
     st.markdown("---")
-    st.subheader("📊 팀 구성 방식")
+    st.subheader("📊 팀 구성 미리보기")
     
-    equal_dist, unequal_dist = calculate_team_distribution(n_people, team_size)
-    
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        st.markdown("**균등:**")
-    with col2:
-        equal_desc = " + ".join([f"{size}명" for size in equal_dist])
-        st.markdown(f"`{equal_desc}`")
-    
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        st.markdown("**불균등:**")
-    with col2:
-        unequal_desc = " + ".join([f"{size}명" for size in unequal_dist])
-        st.markdown(f"`{unequal_desc}`")
-    
-    distribution_type = st.radio(
-        "선택:",
-        ["균등", "불균등"],
-        index=0 if _defaults['distribution_type'] == "균등" else 1,
-        help="균등: 남은 인원을 마지막 팀에 추가\n불균등: 남은 인원을 여러 팀에 분산"
-    )
-    st.session_state.distribution_type = distribution_type
+    team_dist = calculate_team_distribution(n_people, num_teams)
+    dist_desc = " + ".join([f"{size}명" for size in team_dist])
+    st.markdown(f"**{num_teams}개 팀:** `{dist_desc}`")
     
     # 설정이 변경되었는지 확인
-    if st.session_state.n_people != n_people or st.session_state.team_size != team_size:
+    if st.session_state.n_people != n_people or st.session_state.num_teams != num_teams:
         st.session_state.n_people = n_people
-        st.session_state.team_size = team_size
+        st.session_state.num_teams = num_teams
         # 이름 리스트 초기화
         if len(st.session_state.people_names) != n_people:
             # secrets에 이름이 있고 인원수가 맞으면 사용
@@ -511,7 +480,7 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     if st.button("🎲 라운드 생성", type="primary", use_container_width=True):
-        generate_new_round(n_people, team_size, distribution_type)
+        generate_new_round(n_people, num_teams)
         st.success(f"✅ 라운드 {len(st.session_state.rounds)} 생성 완료!")
 
 with col2:
@@ -521,7 +490,7 @@ with col2:
 
 st.markdown("---")
 
-# 생성된 라운드 표시
+# 생성된 라운드 표시 (수정된 버전)
 if st.session_state.rounds:
     # 가장 최근 라운드
     latest_round = st.session_state.rounds[-1]
@@ -531,45 +500,112 @@ if st.session_state.rounds:
     
     # 중복 경고 메시지
     if duplicate_people:
-        st.warning(f"⚠️ {len(duplicate_people)}명이 이전 라운드와 중복된 팀원과 함께합니다 (빨간색으로 표시)")
+        st.warning(f"⚠️ {len(duplicate_people)}명이 이전 라운드와 중복된 팀원과 함께합니다")
     
-    # 팀별로 표시
-    for team_idx, team in enumerate(latest_round):
-        st.markdown(f"### 팀 {team_idx + 1} ({len(team)}명)")
+    # CSS 스타일 적용
+    st.markdown("""
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
         
-        # 팀원을 카드 형태로 표시
-        cols = st.columns(len(team))
-        for idx, person_id in enumerate(team):
-            with cols[idx]:
-                # 중복 여부 확인
-                is_duplicate = person_id in duplicate_people
+        .team-box {
+            font-family: 'Noto Sans KR', sans-serif;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            padding: 12px;
+            background: #ffffff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            margin-bottom: 12px;
+        }
+        
+        .team-header {
+            font-size: 14px;
+            font-weight: 500;
+            color: #495057;
+            margin-bottom: 10px;
+            text-align: center;
+            border-bottom: 1px solid #e9ecef;
+            padding-bottom: 8px;
+        }
+        
+        .team-count {
+            color: #868e96;
+            font-weight: 400;
+        }
+        
+        .member-row {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 6px;
+        }
+        
+        .member-card {
+            flex: 1;
+            padding: 8px 10px;
+            border-radius: 6px;
+            text-align: center;
+            font-size: 13px;
+            font-weight: 400;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        
+        .member-normal {
+            background: #f8f9fa;
+            color: #2d3436;
+        }
+        
+        .member-duplicate {
+            background: #ff6b6b;
+            color: #ffffff;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # 4개씩 그룹으로 나누어 표시
+    teams_per_row = 4
+    num_teams = len(latest_round)
+    
+    for row_start in range(0, num_teams, teams_per_row):
+        # 4분할 컬럼 생성
+        cols = st.columns(teams_per_row)
+        
+        for col_idx in range(teams_per_row):
+            team_idx = row_start + col_idx
+            
+            if team_idx < num_teams:
+                team = latest_round[team_idx]
                 
-                # 중복이면 빨간색, 아니면 보라색
-                if is_duplicate:
-                    gradient = "linear-gradient(135deg, #e74c3c 0%, #c0392b 100%)"
-                    tooltip_text = f"⚠️ {st.session_state.people_names[person_id]}<br><small>이전에 만난 적 있는 팀원과 함께합니다</small>"
-                else:
-                    gradient = "linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
-                    tooltip_text = st.session_state.people_names[person_id]
-                
-                st.markdown(
-                    f"""
-                    <div style="
-                        background: {gradient};
-                        padding: 30px;
-                        border-radius: 15px;
-                        text-align: center;
-                        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                        color: white;
-                        font-size: 20px;
-                        font-weight: bold;
-                    " title="{tooltip_text}">
-                        {st.session_state.people_names[person_id]}
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-        st.markdown("")  # 간격
+                with cols[col_idx]:
+                    # HTML 문자열 빌드
+                    html = '<div class="team-box">'
+                    html += f'<div class="team-header">팀 {team_idx + 1} <span class="team-count">({len(team)}명)</span></div>'
+                    
+                    # 팀원들을 2열로 배치
+                    for i in range(0, len(team), 2):
+                        html += '<div class="member-row">'
+                        
+                        # 왼쪽 카드
+                        person_id = team[i]
+                        is_duplicate = person_id in duplicate_people
+                        card_class = "member-duplicate" if is_duplicate else "member-normal"
+                        name = st.session_state.people_names[person_id]
+                        html += f'<div class="member-card {card_class}">{name}</div>'
+                        
+                        # 오른쪽 카드 (있으면)
+                        if i + 1 < len(team):
+                            person_id = team[i + 1]
+                            is_duplicate = person_id in duplicate_people
+                            card_class = "member-duplicate" if is_duplicate else "member-normal"
+                            name = st.session_state.people_names[person_id]
+                            html += f'<div class="member-card {card_class}">{name}</div>'
+                        else:
+                            html += '<div style="flex: 1;"></div>'
+                        
+                        html += '</div>'
+                    
+                    html += '</div>'
+                    
+                    # HTML 렌더링
+                    st.markdown(html, unsafe_allow_html=True)
     
     # 이전 라운드 히스토리
     if len(st.session_state.rounds) > 1:
@@ -586,23 +622,21 @@ if st.session_state.rounds:
 else:
     st.info("👆 '라운드 생성' 버튼을 눌러 첫 번째 라운드를 만들어보세요!")
 
+
 # 하단 정보
 st.markdown("---")
 
 # 시각화 섹션 (라운드가 생성된 경우에만 표시)
 if st.session_state.rounds:
-    st.subheader("📊 통계 및 시각화")
+    st.markdown("#### 📊 통계 및 시각화")
     
     # 탭 생성
-    viz_tab1, viz_tab2, viz_tab3, viz_tab4 = st.tabs([
-        "📈 라운드별 분석", 
-        "🔥 만남 히트맵", 
-        "👥 개인별 만남",
-        "📊 팀 크기 분포"
+    viz_tab1, viz_tab2 = st.tabs([
+        "라운드별 분석", 
+        "만남 히트맵"
     ])
     
     with viz_tab1:
-        st.markdown("### 라운드별 팀 구성 분석")
         st.markdown("각 라운드에서 새롭게 만난 쌍과 이전에 만났던 쌍(중복)의 수를 보여줍니다.")
         
         fig_rounds = create_round_stats_chart(st.session_state.rounds, st.session_state.meeting_count)
@@ -626,7 +660,6 @@ if st.session_state.rounds:
             st.metric("평균 만남", f"{avg_meetings:.2f}회")
     
     with viz_tab2:
-        st.markdown("### 팀원 간 만남 횟수 히트맵")
         st.markdown("각 사람이 서로 몇 번 같은 팀이 되었는지 보여줍니다. 숫자가 클수록 자주 만난 것입니다.")
         
         fig_heatmap = create_meeting_heatmap(n_people, st.session_state.meeting_count, st.session_state.people_names)
@@ -642,25 +675,6 @@ if st.session_state.rounds:
                 for i, j, count in most_met[:5]:  # 상위 5개만
                     st.write(f"- {st.session_state.people_names[i]} ↔ {st.session_state.people_names[j]}")
     
-    with viz_tab3:
-        st.markdown("### 각 사람별 총 만남 횟수")
-        st.markdown("각 사람이 다른 사람들과 총 몇 번 팀을 이루었는지 보여줍니다.")
-        
-        fig_person = create_person_meeting_chart(n_people, st.session_state.meeting_count, st.session_state.people_names)
-        st.plotly_chart(fig_person, use_container_width=True)
-    
-    with viz_tab4:
-        st.markdown("### 현재 라운드의 팀 크기 분포")
-        
-        latest_round = st.session_state.rounds[-1]
-        fig_distribution = create_team_size_distribution(latest_round)
-        st.plotly_chart(fig_distribution, use_container_width=True)
-        
-        # 팀 크기 상세
-        st.markdown("**팀 크기 상세:**")
-        team_sizes = [len(team) for team in latest_round]
-        for idx, size in enumerate(team_sizes, 1):
-            st.write(f"- 팀 {idx}: {size}명")
 
 st.markdown("---")
 
@@ -669,14 +683,20 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown(
         """
-        <div style="display: flex; align-items: center; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px; font-family: 'Noto Sans KR', sans-serif;">
             <div style="
-                width: 30px;
+                width: 60px;
                 height: 30px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                border-radius: 5px;
-            "></div>
-            <span>정상 배정</span>
+                background: #f8f9fa;
+                border-radius: 6px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 11px;
+                color: #2d3436;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            ">이름</div>
+            <span style="color: #495057; font-size: 14px;">정상 배정</span>
         </div>
         """,
         unsafe_allow_html=True
@@ -684,14 +704,20 @@ with col1:
 with col2:
     st.markdown(
         """
-        <div style="display: flex; align-items: center; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px; font-family: 'Noto Sans KR', sans-serif;">
             <div style="
-                width: 30px;
+                width: 60px;
                 height: 30px;
-                background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
-                border-radius: 5px;
-            "></div>
-            <span>이전 라운드 팀원과 중복</span>
+                background: #ff6b6b;
+                border-radius: 6px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 11px;
+                color: white;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            ">이름</div>
+            <span style="color: #495057; font-size: 14px;">이전 라운드 팀원과 중복</span>
         </div>
         """,
         unsafe_allow_html=True
@@ -701,7 +727,7 @@ st.markdown("---")
 st.markdown(
     """
     <div style="text-align: center; color: #888; font-size: 14px;">
-    💡 <strong>사용법:</strong> '라운드 생성' 버튼을 누르면 전체 인원이 팀으로 나뉩니다.<br>
+    💡 <strong>사용법:</strong> '라운드 생성' 버튼을 누르면 전체 인원이 설정한 개수의 팀으로 나뉩니다.<br>
     다시 버튼을 누르면 이전 라운드와 팀 구성이 겹치지 않는 새로운 라운드가 생성됩니다.<br>
     '리셋' 버튼을 누르면 모든 기록이 초기화됩니다.<br>
     <strong>빨간색</strong>으로 표시된 사람은 이전 라운드에서 같은 팀이었던 사람과 다시 만났습니다.
